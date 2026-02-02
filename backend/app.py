@@ -3,7 +3,7 @@ from flask_cors import CORS
 from datetime import datetime, timedelta
 import config
 from models import db, User, Settings, AlertLog, CountLog
-from camera import get_count, get_detections, generate_video_stream
+from camera import get_count, get_detections, generate_video_stream, start_camera, stop_camera
 from auth import login, register, verify, token_required, admin_required
 
 app = Flask(__name__)
@@ -369,7 +369,9 @@ def internal_error(error):
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
+        start_camera()
         print("Database initialized successfully")
+        print("Camera background thread started")
         print(f"Server starting on http://localhost:5001")
         print(f"CORS enabled for: {config.CORS_ORIGINS}")
     

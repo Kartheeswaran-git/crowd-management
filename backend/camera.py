@@ -15,6 +15,8 @@ class CameraManager:
         self.is_running = False
         self.lock = threading.Lock()
         self.camera_source = config.CAMERA_SOURCE
+        self.thread = None
+        self.stop_event = threading.Event()
         
     def initialize_camera(self):
         """Initialize camera capture with better error handling"""
@@ -39,18 +41,12 @@ class CameraManager:
                     ret, test_frame = self.cap.read()
                     if ret and test_frame is not None:
                         print(f"✓ Camera initialized successfully at index {index}")
-                        print(f"  Resolution: {int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
-                        print(f"  FPS: {int(self.cap.get(cv2.CAP_PROP_FPS))}")
                         return True
                     else:
                         self.cap.release()
                         print(f"  Camera at index {index} opened but cannot read frames")
                 
             print("✗ Failed to initialize any camera")
-            print("  Please check:")
-            print("  1. Camera is connected and turned on")
-            print("  2. Camera permissions are granted in System Preferences > Privacy & Security > Camera")
-            print("  3. No other application is using the camera")
             return False
             
         except ValueError:
@@ -65,6 +61,57 @@ class CameraManager:
                 print(f"✗ Failed to open camera from {self.camera_source}")
                 return False
     
+    def start(self):
+        """Start background capture thread"""
+        if self.is_running:
+            return
+        
+        self.is_running = True
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._run_capture, daemon=True)
+        self.thread.start()
+        print("Camera background thread started")
+
+    def stop(self):
+        """Stop background capture thread"""
+        self.is_running = False
+        self.stop_event.set()
+        if self.thread:
+            self.thread.join(timeout=1.0)
+        self.release_camera()
+        print("Camera background thread stopped")
+
+    def _run_capture(self):
+        """Internal loop for background capture and detection"""
+        while not self.stop_event.is_set():
+            if self.cap is None or not self.cap.isOpened():
+                if not self.initialize_camera():
+                    time.sleep(1)
+                    continue
+            
+            ret, frame = self.cap.read()
+            
+            if not ret or frame is None:
+                print("Error reading frame, attempting to reconnect...")
+                self.release_camera()
+                time.sleep(1)
+                continue
+            
+            # Perform detection with bounding boxes
+            try:
+                count, detections, annotated_frame = detect_people(frame, draw_boxes=True)
+                
+                # Update latest values
+                with self.lock:
+                    self.latest_count = count
+                    self.latest_frame = annotated_frame
+                    self.latest_detections = detections
+            except Exception as e:
+                print(f"Error in background detection: {e}")
+            
+            # Control frame rate
+            time.sleep(1.0 / config.CAMERA_FPS)
+
     def release_camera(self):
         """Release camera resources"""
         if self.cap is not None:
@@ -87,56 +134,28 @@ class CameraManager:
             return self.latest_detections
     
     def update_detection(self):
-        """Update detection from camera"""
-        if self.cap is None or not self.cap.isOpened():
-            if not self.initialize_camera():
-                return False
-        
-        ret, frame = self.cap.read()
-        
-        if ret and frame is not None:
-            # Perform detection
-            count, detections, annotated_frame = detect_people(frame, draw_boxes=True)
-            
-            with self.lock:
-                self.latest_count = count
-                self.latest_frame = annotated_frame
-                self.latest_detections = detections
-            
-            return True
-        else:
-            print("Error: Failed to read frame from camera")
-            return False
+        """No-op in threaded version, data is updated in background"""
+        pass
     
     def generate_frames(self):
-        """Generate frames for video streaming"""
+        """Generate frames for video streaming from latest results"""
         while True:
-            if self.cap is None or not self.cap.isOpened():
-                if not self.initialize_camera():
-                    time.sleep(1)
-                    continue
+            # If not running, start the background thread
+            if not self.is_running:
+                self.start()
             
-            ret, frame = self.cap.read()
-            
-            if not ret or frame is None:
-                print("Error reading frame, attempting to reconnect...")
-                self.release_camera()
-                time.sleep(1)
-                continue
-            
-            # Perform detection with bounding boxes
-            count, detections, annotated_frame = detect_people(frame, draw_boxes=True)
-            
-            # Update latest values
             with self.lock:
-                self.latest_count = count
-                self.latest_frame = annotated_frame
-                self.latest_detections = detections
+                annotated_frame = self.latest_frame.copy() if self.latest_frame is not None else None
+            
+            if annotated_frame is None:
+                time.sleep(0.1)
+                continue
             
             # Encode frame as JPEG
             ret, buffer = cv2.imencode('.jpg', annotated_frame)
             
             if not ret:
+                time.sleep(0.1)
                 continue
             
             frame_bytes = buffer.tobytes()
@@ -145,7 +164,7 @@ class CameraManager:
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             
-            # Small delay to control frame rate
+            # Small delay to keep streaming smooth
             time.sleep(1.0 / config.CAMERA_FPS)
 
 
@@ -154,7 +173,9 @@ camera_manager = CameraManager()
 
 def get_count():
     """Get current people count"""
-    camera_manager.update_detection()
+    # Ensure background thread is running
+    if not camera_manager.is_running:
+        camera_manager.start()
     return camera_manager.get_count()
 
 def get_detections():
@@ -164,3 +185,11 @@ def get_detections():
 def generate_video_stream():
     """Generate video stream for Flask response"""
     return camera_manager.generate_frames()
+
+def start_camera():
+    """Start the background camera thread"""
+    camera_manager.start()
+
+def stop_camera():
+    """Stop the background camera thread"""
+    camera_manager.stop()
