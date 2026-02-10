@@ -367,12 +367,22 @@ def internal_error(error):
 # ============================================================================
 
 if __name__ == "__main__":
+    import os
     with app.app_context():
         db.create_all()
-        start_camera()
+        
+        # Only start camera if not in cloud mode
+        cloud_mode = os.getenv("CLOUD_MODE", "false").lower() == "true"
+        if not cloud_mode:
+            start_camera()
+            print("Camera background thread started")
+        else:
+            print("Running in CLOUD_MODE - camera disabled")
+        
         print("Database initialized successfully")
-        print("Camera background thread started")
-        print(f"Server starting on http://localhost:5001")
+        port = int(os.getenv("PORT", "5001"))
+        print(f"Server starting on http://0.0.0.0:{port}")
         print(f"CORS enabled for: {config.CORS_ORIGINS}")
     
-    app.run(debug=True, host='0.0.0.0', port=5001, threaded=True)
+    app.run(debug=False, host='0.0.0.0', port=port, threaded=True)
+

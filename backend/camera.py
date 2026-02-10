@@ -1,8 +1,21 @@
-import cv2
-from detect import detect_people
-import config
+import os
 import threading
 import time
+import numpy as np
+
+# Conditional import for camera - won't crash if cv2 unavailable
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    print("WARNING: OpenCV not available. Running in mock mode.")
+
+from detect import detect_people
+import config
+
+# Detect if running in cloud environment (no camera hardware)
+CLOUD_MODE = os.getenv("CLOUD_MODE", "false").lower() == "true" or not CV2_AVAILABLE
 
 class CameraManager:
     """Manage camera capture and people detection"""
@@ -20,6 +33,11 @@ class CameraManager:
         
     def initialize_camera(self):
         """Initialize camera capture with better error handling"""
+        # In cloud mode, skip camera initialization
+        if CLOUD_MODE:
+            print("Running in CLOUD_MODE - camera hardware disabled")
+            return True
+            
         if self.cap is not None and self.cap.isOpened():
             return True
         
@@ -60,6 +78,7 @@ class CameraManager:
             else:
                 print(f"✗ Failed to open camera from {self.camera_source}")
                 return False
+
     
     def start(self):
         """Start background capture thread"""
@@ -84,6 +103,22 @@ class CameraManager:
     def _run_capture(self):
         """Internal loop for background capture and detection"""
         while not self.stop_event.is_set():
+            # In cloud mode, generate mock data
+            if CLOUD_MODE:
+                # Create a simple mock frame (640x480 black image with text)
+                mock_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                if CV2_AVAILABLE:
+                    cv2.putText(mock_frame, "CLOUD MODE - No Camera", (120, 240),
+                              cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                
+                with self.lock:
+                    self.latest_count = 0  # Mock count
+                    self.latest_frame = mock_frame
+                    self.latest_detections = []
+                
+                time.sleep(1.0)
+                continue
+            
             if self.cap is None or not self.cap.isOpened():
                 if not self.initialize_camera():
                     time.sleep(1)
